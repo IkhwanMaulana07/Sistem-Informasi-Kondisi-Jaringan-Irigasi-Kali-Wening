@@ -1,0 +1,298 @@
+openapi: 3.1.0
+info:
+  title: DI Kali Wening Irrigation Network Condition API
+  version: "1.2"
+  description: REST API kondisi aset, dampak hilir, rekap, prioritas, kualitas data, dan impor susulan.
+servers:
+  - url: http://localhost:8080/api
+tags:
+  - name: System
+  - name: Assets
+  - name: Analytics
+  - name: Data Quality
+  - name: Import
+paths:
+  /health:
+    get:
+      tags: [System]
+      summary: Status impor awal
+      responses:
+        "200":
+          description: Status aplikasi
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: {type: string, enum: [memuat, siap]}
+              examples:
+                loading: {value: {status: memuat}}
+                ready: {value: {status: siap}}
+  /versi:
+    get:
+      tags: [System]
+      summary: Versi kontrak
+      responses:
+        "200":
+          description: Versi kontrak API
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [versi_kontrak]
+                properties:
+                  versi_kontrak: {type: string, const: "1.2"}
+              example: {versi_kontrak: "1.2"}
+  /aset:
+    get:
+      tags: [Assets]
+      summary: Daftar bangunan
+      parameters:
+        - in: query
+          name: jenis
+          schema: {$ref: "#/components/schemas/AssetType"}
+        - in: query
+          name: kondisi
+          schema: {$ref: "#/components/schemas/Condition"}
+        - in: query
+          name: saluran
+          schema: {type: string}
+      responses:
+        "200":
+          description: Daftar aset
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [jumlah, data]
+                properties:
+                  jumlah: {type: integer, minimum: 0}
+                  data:
+                    type: array
+                    items: {$ref: "#/components/schemas/Asset"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+  /aset/{kode_aset}:
+    get:
+      tags: [Assets]
+      summary: Detail aset dan seluruh riwayat laporan termasuk batal
+      parameters:
+        - $ref: "#/components/parameters/AssetCode"
+      responses:
+        "200":
+          description: Detail aset
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Asset"
+                  - type: object
+                    required: [riwayat]
+                    properties:
+                      riwayat:
+                        type: array
+                        items: {$ref: "#/components/schemas/Report"}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /aset/{kode_aset}/dampak:
+    get:
+      tags: [Assets, Analytics]
+      summary: Petak tersier terdampak di hilir
+      parameters:
+        - $ref: "#/components/parameters/AssetCode"
+      responses:
+        "200":
+          description: Hasil dampak
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Impact"}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /rekap/saluran:
+    get:
+      tags: [Analytics]
+      summary: Panjang saluran per tingkat dan kondisi
+      responses:
+        "200":
+          description: Rekap panjang dalam km
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      required: [tingkat, kondisi, panjang_km]
+                      properties:
+                        tingkat: {type: string, enum: [primer, sekunder]}
+                        kondisi: {$ref: "#/components/schemas/Condition"}
+                        panjang_km: {type: number, minimum: 0}
+  /prioritas:
+    get:
+      tags: [Analytics]
+      summary: Prioritas pemeliharaan
+      parameters:
+        - in: query
+          name: limit
+          description: Default 20
+          schema: {type: integer, minimum: 1, default: 20}
+      responses:
+        "200":
+          description: Daftar skor positif terurut
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      required: [peringkat, kode_aset, kondisi, luas_terdampak_ha, skor]
+                      properties:
+                        peringkat: {type: integer, minimum: 1}
+                        kode_aset: {type: string}
+                        kondisi: {$ref: "#/components/schemas/Condition"}
+                        luas_terdampak_ha: {type: number, minimum: 0}
+                        skor: {type: number, exclusiveMinimum: 0}
+        "400": {$ref: "#/components/responses/BadRequest"}
+  /kualitas-data:
+    get:
+      tags: [Data Quality]
+      summary: Jumlah temuan per kategori
+      responses:
+        "200":
+          description: Ringkasan dan rincian temuan
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      required: [kategori, jumlah]
+                      properties:
+                        kategori: {type: string}
+                        jumlah: {type: integer, minimum: 0}
+                  rincian:
+                    type: array
+                    items: {$ref: "#/components/schemas/QualityFinding"}
+  /impor/susulan:
+    post:
+      tags: [Import]
+      summary: Impor laporan_susulan.xlsx dari path terkonfigurasi
+      description: File tidak dikirim melalui arbitrary path. Pemanggilan berulang wajib idempoten.
+      responses:
+        "200":
+          description: Counter hasil impor
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ditambah, diubah, dibatalkan, tidak_berubah]
+                properties:
+                  ditambah: {type: integer, minimum: 0}
+                  diubah: {type: integer, minimum: 0}
+                  dibatalkan: {type: integer, minimum: 0}
+                  tidak_berubah: {type: integer, minimum: 0}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "500": {$ref: "#/components/responses/ServerError"}
+components:
+  parameters:
+    AssetCode:
+      in: path
+      name: kode_aset
+      required: true
+      schema: {type: string, minLength: 1}
+  schemas:
+    AssetType:
+      type: string
+      enum: [bendung, bangunan_bagi, bangunan_sadap, bangunan_bagi_sadap, bangunan_pelengkap]
+    Condition:
+      type: string
+      enum: [baik, rusak_ringan, rusak_sedang, rusak_berat]
+    Asset:
+      type: object
+      required: [kode_aset, nomenklatur, jenis, nama_saluran, kondisi, tgl_kondisi, lon, lat, tanda]
+      properties:
+        kode_aset: {type: string}
+        nomenklatur: {type: [string, "null"]}
+        jenis: {$ref: "#/components/schemas/AssetType"}
+        nama_saluran: {type: [string, "null"]}
+        kondisi: {$ref: "#/components/schemas/Condition"}
+        tgl_kondisi: {type: [string, "null"], format: date}
+        lon: {type: [number, "null"], minimum: -180, maximum: 180}
+        lat: {type: [number, "null"], minimum: -90, maximum: 90}
+        tanda: {type: array, items: {type: string}}
+    Report:
+      type: object
+      properties:
+        id_laporan: {type: string}
+        tanggal: {type: string, format: date}
+        petugas: {type: [string, "null"]}
+        nomenklatur: {type: [string, "null"]}
+        jenis_kerusakan: {type: [string, "null"]}
+        kondisi: {$ref: "#/components/schemas/Condition"}
+        status: {type: string, enum: [aktif, batal]}
+        keterangan: {type: [string, "null"]}
+        matching_method: {type: [string, "null"]}
+        matching_distance_m: {type: [number, "null"]}
+    Impact:
+      type: object
+      required: [kode_aset, jumlah_petak, luas_terdampak_ha, petak]
+      properties:
+        kode_aset: {type: string}
+        jumlah_petak: {type: integer, minimum: 0}
+        luas_terdampak_ha: {type: number, minimum: 0}
+        petak:
+          type: array
+          items:
+            type: object
+            required: [kode_petak, luas_ha]
+            properties:
+              kode_petak: {type: string}
+              luas_ha: {type: number, minimum: 0}
+    QualityFinding:
+      type: object
+      properties:
+        sumber_berkas: {type: string}
+        pengenal_baris: {type: string}
+        kategori: {type: string}
+        masalah: {type: string}
+        tindakan: {type: string}
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: {type: string}
+            message: {type: string}
+  responses:
+    BadRequest:
+      description: Parameter tidak valid
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    NotFound:
+      description: Data tidak ditemukan
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    Conflict:
+      description: Konflik proses impor
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    ServerError:
+      description: Kesalahan internal
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
