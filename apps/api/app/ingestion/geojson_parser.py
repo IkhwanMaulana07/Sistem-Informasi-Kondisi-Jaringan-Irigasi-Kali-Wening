@@ -82,11 +82,13 @@ def parse_canals_geojson(file_path: str) -> Tuple[List[Dict[str, Any]], List[Dic
         length_m = calculate_length_meters(geom_wgs)
 
         canal_record = {
+            "id": id_ruas,
             "id_ruas": id_ruas,
             "nama_saluran": props.get('nama_saluran'),
             "tingkat": norm_level,
             "kondisi": norm_cond,
             "geom": geom_wgs,
+            "geom_wgs": geom_wgs,
             "geom_utm": to_utm49s(geom_wgs),
             "length_m": round(length_m, 3),
             "source_file": "saluran.geojson",

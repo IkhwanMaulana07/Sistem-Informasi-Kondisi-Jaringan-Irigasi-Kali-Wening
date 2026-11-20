@@ -69,7 +69,7 @@ class IrrigationNetwork:
                 canal_id=cid,
                 length=edge_len,
                 geom_utm=geom_utm,
-                geom_wgs=c['geom_wgs'],
+                geom_wgs=c.get('geom_wgs') or c.get('geom'),
                 canal_info=c
             )
 

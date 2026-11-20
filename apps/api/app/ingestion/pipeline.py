@@ -233,6 +233,7 @@ def run_initial_import(db: Session) -> bool:
                     detail=f"Tanda kualitas {tag_code}"
                 )
                 db.add(tag_obj)
+        db.flush()
 
         # Persist Canals
         canal_orm_map = {}
@@ -251,6 +252,8 @@ def run_initial_import(db: Session) -> bool:
             )
             db.add(canal_obj)
             canal_orm_map[c['id']] = canal_obj
+
+        db.flush()
 
         # Persist Tertiary Plots
         plot_orm_map = {}
@@ -272,6 +275,8 @@ def run_initial_import(db: Session) -> bool:
             )
             db.add(plot_obj)
             plot_orm_map[p['id']] = plot_obj
+
+        db.flush()
 
         # Persist Reports
         for rep in matched_reports:

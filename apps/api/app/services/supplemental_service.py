@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, date
 from typing import Dict, Any, List, Tuple
 from sqlalchemy.orm import Session
-from geoalchemy2.shape import from_shape
+from geoalchemy2.shape import from_shape, to_shape
 
 from app.core.config import settings
 from app.core.state import app_state
@@ -61,7 +61,7 @@ def process_supplemental_import(db: Session) -> Dict[str, int]:
                 'id': a.id,
                 'kode_aset': a.kode_aset,
                 'nomenklatur_normalized': a.nomenklatur_normalized,
-                'geom': a.geom
+                'geom': to_shape(a.geom) if a.geom is not None else None
             }
             for a in existing_assets
         ]

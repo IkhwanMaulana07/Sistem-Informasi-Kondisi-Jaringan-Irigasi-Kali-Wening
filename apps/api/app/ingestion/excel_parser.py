@@ -149,10 +149,18 @@ def match_reports_to_assets(
             nom_to_assets.setdefault(nom, []).append(a)
 
     # Prepare assets with geometry for spatial fallback
-    assets_with_geom = [
-        a for a in assets 
-        if a.get('geom') is not None and not a['geom'].is_empty
-    ]
+    assets_with_geom = []
+    for a in assets:
+        g = a.get('geom')
+        if g is not None:
+            if not hasattr(g, 'is_empty'):
+                try:
+                    from geoalchemy2.shape import to_shape
+                    g = to_shape(g)
+                except Exception:
+                    g = None
+            if g is not None and not g.is_empty:
+                assets_with_geom.append({**a, 'geom': g})
     # Sort deterministically by kode_aset for tie breaks
     assets_with_geom.sort(key=lambda x: str(x.get('kode_aset', '')))
 
