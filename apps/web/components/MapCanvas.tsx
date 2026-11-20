@@ -37,42 +37,30 @@ interface MapCanvasProps {
   initialAssetCode?: string | null;
 }
 
-// Controller to fly and zoom to asset & affected plots
+// Controller to fly and zoom IN to selected asset
 function MapPanController({ 
   targetCoords,
-  fitBoundsBox,
   trigger
 }: { 
   targetCoords: [number, number] | null;
-  fitBoundsBox: L.LatLngBoundsExpression | null;
   trigger: number;
 }) {
   const map = useMap();
   useEffect(() => {
-    if (!targetCoords && !fitBoundsBox) return;
+    if (!targetCoords) return;
 
     const timer = setTimeout(() => {
       try {
         map.invalidateSize();
-        if (fitBoundsBox) {
-          map.fitBounds(fitBoundsBox, {
-            padding: [60, 60],
-            maxZoom: 16,
-            animate: true,
-            duration: 1.2,
-          });
-        } else if (targetCoords) {
-          map.flyTo(targetCoords, 16, { animate: true, duration: 1.2 });
-        }
+        // Always zoom IN close-up to the selected building structure (zoom level 16)
+        map.flyTo(targetCoords, 16, { animate: true, duration: 1.2 });
       } catch {
-        if (targetCoords) {
-          map.setView(targetCoords, 16);
-        }
+        map.setView(targetCoords, 16);
       }
-    }, 200);
+    }, 150);
 
     return () => clearTimeout(timer);
-  }, [targetCoords, fitBoundsBox, trigger, map]);
+  }, [targetCoords, trigger, map]);
 
   return null;
 }
@@ -85,7 +73,6 @@ export default function MapCanvas({ initialAssetCode }: MapCanvasProps) {
   const [selectedAsset, setSelectedAsset] = useState<any>(null);
   const [selectedImpact, setSelectedImpact] = useState<AssetImpact | null>(null);
   const [panTarget, setPanTarget] = useState<[number, number] | null>(null);
-  const [fitBoundsBox, setFitBoundsBox] = useState<L.LatLngBoundsExpression | null>(null);
   const [flyTrigger, setFlyTrigger] = useState<number>(0);
 
   // Search
@@ -116,7 +103,7 @@ export default function MapCanvas({ initialAssetCode }: MapCanvasProps) {
             String(f.properties?.kode_aset || '').trim().toLowerCase() === q
           );
           if (match) {
-            handleSelectAsset(match, p);
+            handleSelectAsset(match);
           }
         }
       } catch (err) {
@@ -134,59 +121,25 @@ export default function MapCanvas({ initialAssetCode }: MapCanvasProps) {
         String(f.properties?.kode_aset || '').trim().toLowerCase() === q
       );
       if (match) {
-        handleSelectAsset(match, plotsGeoJson);
+        handleSelectAsset(match);
       }
     }
-  }, [initialAssetCode, assetsGeoJson, plotsGeoJson]);
+  }, [initialAssetCode, assetsGeoJson]);
 
-  const handleSelectAsset = async (feat: any, currentPlotsData?: any) => {
+  const handleSelectAsset = async (feat: any) => {
     const props = feat.properties;
     setSelectedAsset(props);
     setSearchQuery(props.kode_aset || '');
 
-    let lat = 0;
-    let lon = 0;
     if (feat.geometry?.coordinates) {
-      [lon, lat] = feat.geometry.coordinates;
+      const [lon, lat] = feat.geometry.coordinates;
       setPanTarget([lat, lon]);
-      setFitBoundsBox(null);
       setFlyTrigger((t) => t + 1);
     }
 
     try {
       const imp = await fetchAssetImpact(props.kode_aset);
       setSelectedImpact(imp);
-
-      // Compute bounding box covering the asset and its impacted tertiary plots
-      const pData = currentPlotsData || plotsGeoJson;
-      if (imp?.petak?.length && pData?.features) {
-        const impactedCodes = new Set(imp.petak.map((p: any) => p.kode_petak));
-        const coords: [number, number][] = [];
-        if (lat && lon) coords.push([lat, lon]);
-
-        pData.features.forEach((pf: any) => {
-          if (impactedCodes.has(pf.properties?.kode_petak)) {
-            const geom = pf.geometry;
-            if (geom?.type === 'Polygon') {
-              geom.coordinates[0]?.forEach(([pLon, pLat]: [number, number]) => {
-                coords.push([pLat, pLon]);
-              });
-            } else if (geom?.type === 'MultiPolygon') {
-              geom.coordinates?.forEach((poly: any) => {
-                poly[0]?.forEach(([pLon, pLat]: [number, number]) => {
-                  coords.push([pLat, pLon]);
-                });
-              });
-            }
-          }
-        });
-
-        if (coords.length > 0) {
-          const b = L.latLngBounds(coords);
-          setFitBoundsBox(b);
-          setFlyTrigger((t) => t + 1);
-        }
-      }
     } catch {
       setSelectedImpact(null);
     }
@@ -246,12 +199,102 @@ export default function MapCanvas({ initialAssetCode }: MapCanvasProps) {
     };
   };
 
-  // Custom Building Marker HTML
-  const createAssetIcon = (cond: string) => {
+  // Custom Building Marker HTML with animated beacon & pointer when selected
+  const createAssetIcon = (cond: string, isSelected: boolean = false, kode_aset: string = '') => {
     let color = '#16a34a';
     if (cond === 'rusak_ringan') color = '#eab308';
     else if (cond === 'rusak_sedang') color = '#f97316';
     else if (cond === 'rusak_berat') color = '#ef4444';
+
+    if (isSelected) {
+      return L.divIcon({
+        className: 'selected-asset-marker',
+        html: `
+          <div style="position: relative; width: 0; height: 0; display: flex; align-items: center; justify-content: center;">
+            <!-- Outer Pulsing Radar Beacon Waves -->
+            <div style="
+              position: absolute;
+              top: 0;
+              left: 0;
+              width: 54px;
+              height: 54px;
+              border-radius: 50%;
+              background-color: ${color};
+              opacity: 0.35;
+              transform: translate(-50%, -50%);
+              animation: markerBeaconPing 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;
+              pointer-events: none;
+            "></div>
+            <div style="
+              position: absolute;
+              top: 0;
+              left: 0;
+              width: 36px;
+              height: 36px;
+              border-radius: 50%;
+              background-color: ${color};
+              opacity: 0.55;
+              transform: translate(-50%, -50%);
+              animation: markerBeaconPulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+              pointer-events: none;
+            "></div>
+            <!-- Center Pin -->
+            <div style="
+              position: absolute;
+              top: 0;
+              left: 0;
+              width: 20px;
+              height: 20px;
+              background-color: ${color};
+              border: 3.5px solid #ffffff;
+              border-radius: 50%;
+              transform: translate(-50%, -50%);
+              box-shadow: 0 0 14px rgba(0,0,0,0.65), 0 0 0 3px ${color};
+              z-index: 100;
+            "></div>
+            <!-- Pointer Callout Badge -->
+            <div style="
+              position: absolute;
+              bottom: 20px;
+              left: 50%;
+              transform: translateX(-50%);
+              background: #0f172a;
+              color: #ffffff;
+              font-family: inherit;
+              font-weight: 800;
+              font-size: 11px;
+              padding: 4px 10px;
+              border-radius: 6px;
+              white-space: nowrap;
+              box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+              border: 1px solid rgba(255,255,255,0.25);
+              pointer-events: none;
+              z-index: 101;
+              display: flex;
+              align-items: center;
+              gap: 5px;
+            ">
+              <span style="color: #4ade80;">📍</span>
+              <span>${kode_aset}</span>
+              <span style="font-size: 9px; font-weight: normal; opacity: 0.8; background: #334155; padding: 1px 5px; border-radius: 3px;">Terpilih</span>
+              <div style="
+                position: absolute;
+                top: 100%;
+                left: 50%;
+                transform: translateX(-50%);
+                width: 0;
+                height: 0;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 5px solid #0f172a;
+              "></div>
+            </div>
+          </div>
+        `,
+        iconSize: [0, 0],
+        iconAnchor: [0, 0],
+      });
+    }
 
     return L.divIcon({
       className: 'custom-asset-marker',
@@ -305,7 +348,7 @@ export default function MapCanvas({ initialAssetCode }: MapCanvasProps) {
           zoomControl={true}
         >
           <ScaleControl position="bottomleft" imperial={false} />
-          <MapPanController targetCoords={panTarget} fitBoundsBox={fitBoundsBox} trigger={flyTrigger} />
+          <MapPanController targetCoords={panTarget} trigger={flyTrigger} />
 
           {/* Base Tiles (Satellite or Street) */}
           {tileMode === 'satellite' ? (
@@ -366,12 +409,14 @@ export default function MapCanvas({ initialAssetCode }: MapCanvasProps) {
               if (!coords || coords.length < 2) return null;
               const [lon, lat] = coords;
               const props = feat.properties;
+              const isSelected = selectedAsset?.kode_aset === props.kode_aset;
 
               return (
                 <Marker
-                  key={`asset-${props.kode_aset || idx}`}
+                  key={`asset-${props.kode_aset || idx}-${isSelected ? 'selected' : 'normal'}`}
                   position={[lat, lon]}
-                  icon={createAssetIcon(props.kondisi)}
+                  icon={createAssetIcon(props.kondisi, isSelected, props.kode_aset)}
+                  zIndexOffset={isSelected ? 1000 : 1}
                   eventHandlers={{
                     click: () => handleSelectAsset(feat),
                   }}
@@ -379,6 +424,18 @@ export default function MapCanvas({ initialAssetCode }: MapCanvasProps) {
               );
             })}
         </MapContainer>
+
+        {/* Global Keyframes for Marker Pulsing Radar Beacon */}
+        <style jsx global>{`
+          @keyframes markerBeaconPing {
+            0% { transform: translate(-50%, -50%) scale(0.6); opacity: 0.9; }
+            100% { transform: translate(-50%, -50%) scale(2.6); opacity: 0; }
+          }
+          @keyframes markerBeaconPulse {
+            0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 0.75; }
+            50% { transform: translate(-50%, -50%) scale(1.45); opacity: 0.25; }
+          }
+        `}</style>
 
         {/* Selected Asset Popup matching mockup */}
         {selectedAsset && (
