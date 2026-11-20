@@ -7,7 +7,8 @@ import {
   GeoJSON, 
   Marker, 
   Popup, 
-  useMap 
+  useMap,
+  ScaleControl
 } from 'react-leaflet';
 import L from 'leaflet';
 import { 
@@ -18,13 +19,13 @@ import {
 } from '@/lib/api';
 import { AssetImpact } from '@/types';
 import { 
-  Building2, 
-  AlertTriangle, 
-  CheckCircle, 
+  Search, 
   Layers, 
   X, 
   ArrowRight,
-  Info
+  Eye,
+  SlidersHorizontal,
+  Check
 } from 'lucide-react';
 import Link from 'next/link';
 
@@ -36,14 +37,43 @@ interface MapCanvasProps {
   initialAssetCode?: string | null;
 }
 
-// Controller component to zoom/pan to an asset
-function MapPanController({ targetCoords }: { targetCoords: [number, number] | null }) {
+// Controller to fly and zoom to asset & affected plots
+function MapPanController({ 
+  targetCoords,
+  fitBoundsBox,
+  trigger
+}: { 
+  targetCoords: [number, number] | null;
+  fitBoundsBox: L.LatLngBoundsExpression | null;
+  trigger: number;
+}) {
   const map = useMap();
   useEffect(() => {
-    if (targetCoords) {
-      map.flyTo(targetCoords, 16, { duration: 1.2 });
-    }
-  }, [targetCoords, map]);
+    if (!targetCoords && !fitBoundsBox) return;
+
+    const timer = setTimeout(() => {
+      try {
+        map.invalidateSize();
+        if (fitBoundsBox) {
+          map.fitBounds(fitBoundsBox, {
+            padding: [60, 60],
+            maxZoom: 16,
+            animate: true,
+            duration: 1.2,
+          });
+        } else if (targetCoords) {
+          map.flyTo(targetCoords, 16, { animate: true, duration: 1.2 });
+        }
+      } catch {
+        if (targetCoords) {
+          map.setView(targetCoords, 16);
+        }
+      }
+    }, 200);
+
+    return () => clearTimeout(timer);
+  }, [targetCoords, fitBoundsBox, trigger, map]);
+
   return null;
 }
 
@@ -52,172 +82,259 @@ export default function MapCanvas({ initialAssetCode }: MapCanvasProps) {
   const [assetsGeoJson, setAssetsGeoJson] = useState<any>(null);
   const [plotsGeoJson, setPlotsGeoJson] = useState<any>(null);
 
-  // Layer toggles
-  const [showCanals, setShowCanals] = useState(true);
-  const [showAssets, setShowAssets] = useState(true);
-  const [showPlots, setShowPlots] = useState(true);
-
-  // Selected asset & impact state
   const [selectedAsset, setSelectedAsset] = useState<any>(null);
-  const [impactData, setImpactData] = useState<AssetImpact | null>(null);
-  const [loadingImpact, setLoadingImpact] = useState<boolean>(false);
+  const [selectedImpact, setSelectedImpact] = useState<AssetImpact | null>(null);
   const [panTarget, setPanTarget] = useState<[number, number] | null>(null);
+  const [fitBoundsBox, setFitBoundsBox] = useState<L.LatLngBoundsExpression | null>(null);
+  const [flyTrigger, setFlyTrigger] = useState<number>(0);
+
+  // Search
+  const [searchQuery, setSearchQuery] = useState<string>('');
+
+  // Layer Toggles matching mockup
+  const [showCanals, setShowCanals] = useState<boolean>(true);
+  const [showAssets, setShowAssets] = useState<boolean>(true);
+  const [showPlots, setShowPlots] = useState<boolean>(true);
+  const [tileMode, setTileMode] = useState<'satellite' | 'street'>('satellite');
 
   useEffect(() => {
-    async function loadLayers() {
+    async function loadGIS() {
       try {
-        const [canals, assets, plots] = await Promise.all([
-          fetchMapCanals().catch(() => null),
-          fetchMapAssets().catch(() => null),
-          fetchMapPlots().catch(() => null),
+        const [c, a, p] = await Promise.all([
+          fetchMapCanals(),
+          fetchMapAssets(),
+          fetchMapPlots(),
         ]);
-        setCanalsGeoJson(canals);
-        setAssetsGeoJson(assets);
-        setPlotsGeoJson(plots);
+        setCanalsGeoJson(c);
+        setAssetsGeoJson(a);
+        setPlotsGeoJson(p);
 
-        if (initialAssetCode && assets?.features) {
-          const target = assets.features.find(
-            (f: any) => f.properties.kode_aset === initialAssetCode
+        // Auto-select initialAssetCode if provided
+        if (initialAssetCode && a?.features) {
+          const q = String(initialAssetCode).trim().toLowerCase();
+          const match = a.features.find((f: any) => 
+            String(f.properties?.kode_aset || '').trim().toLowerCase() === q
           );
-          if (target && target.geometry?.coordinates) {
-            setSelectedAsset(target.properties);
-            const [lon, lat] = target.geometry.coordinates;
-            setPanTarget([lat, lon]);
-            // Automatically fetch impact
-            fetchImpact(initialAssetCode);
+          if (match) {
+            handleSelectAsset(match, p);
           }
         }
-      } catch (e) {
-        console.error('Failed to load map layers', e);
+      } catch (err) {
+        console.error('Failed to load GIS GeoJSON layers', err);
       }
     }
-    loadLayers();
+    loadGIS();
   }, [initialAssetCode]);
 
-  async function fetchImpact(kode_aset: string) {
-    try {
-      setLoadingImpact(true);
-      const impact = await fetchAssetImpact(kode_aset);
-      setImpactData(impact);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoadingImpact(false);
+  // Secondary effect to ensure auto-zoom if initialAssetCode changes
+  useEffect(() => {
+    if (initialAssetCode && assetsGeoJson?.features) {
+      const q = String(initialAssetCode).trim().toLowerCase();
+      const match = assetsGeoJson.features.find((f: any) => 
+        String(f.properties?.kode_aset || '').trim().toLowerCase() === q
+      );
+      if (match) {
+        handleSelectAsset(match, plotsGeoJson);
+      }
     }
-  }
+  }, [initialAssetCode, assetsGeoJson, plotsGeoJson]);
 
-  function handleAssetClick(props: any, coords: [number, number]) {
+  const handleSelectAsset = async (feat: any, currentPlotsData?: any) => {
+    const props = feat.properties;
     setSelectedAsset(props);
-    setPanTarget(coords);
-    fetchImpact(props.kode_aset);
-  }
+    setSearchQuery(props.kode_aset || '');
 
-  function clearSelection() {
-    setSelectedAsset(null);
-    setImpactData(null);
-  }
+    let lat = 0;
+    let lon = 0;
+    if (feat.geometry?.coordinates) {
+      [lon, lat] = feat.geometry.coordinates;
+      setPanTarget([lat, lon]);
+      setFitBoundsBox(null);
+      setFlyTrigger((t) => t + 1);
+    }
 
-  // Styling for canal lines
-  function getCanalStyle(feature: any) {
-    const cond = feature.properties.kondisi;
-    const level = feature.properties.tingkat;
-    
-    let color = '#16a34a'; // baik
-    if (cond === 'rusak_ringan') color = '#d97706';
-    else if (cond === 'rusak_sedang') color = '#ea580c';
-    else if (cond === 'rusak_berat') color = '#dc2626';
+    try {
+      const imp = await fetchAssetImpact(props.kode_aset);
+      setSelectedImpact(imp);
 
-    const weight = level === 'primer' ? 4 : 2.5;
+      // Compute bounding box covering the asset and its impacted tertiary plots
+      const pData = currentPlotsData || plotsGeoJson;
+      if (imp?.petak?.length && pData?.features) {
+        const impactedCodes = new Set(imp.petak.map((p: any) => p.kode_petak));
+        const coords: [number, number][] = [];
+        if (lat && lon) coords.push([lat, lon]);
+
+        pData.features.forEach((pf: any) => {
+          if (impactedCodes.has(pf.properties?.kode_petak)) {
+            const geom = pf.geometry;
+            if (geom?.type === 'Polygon') {
+              geom.coordinates[0]?.forEach(([pLon, pLat]: [number, number]) => {
+                coords.push([pLat, pLon]);
+              });
+            } else if (geom?.type === 'MultiPolygon') {
+              geom.coordinates?.forEach((poly: any) => {
+                poly[0]?.forEach(([pLon, pLat]: [number, number]) => {
+                  coords.push([pLat, pLon]);
+                });
+              });
+            }
+          }
+        });
+
+        if (coords.length > 0) {
+          const b = L.latLngBounds(coords);
+          setFitBoundsBox(b);
+          setFlyTrigger((t) => t + 1);
+        }
+      }
+    } catch {
+      setSelectedImpact(null);
+    }
+  };
+
+  const handleSearchSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!searchQuery.trim() || !assetsGeoJson?.features) return;
+    const q = searchQuery.toLowerCase().trim();
+    const match = assetsGeoJson.features.find((f: any) => {
+      const code = String(f.properties?.kode_aset || '').toLowerCase();
+      const nom = String(f.properties?.nomenklatur || '').toLowerCase();
+      const name = String(f.properties?.nama_saluran || '').toLowerCase();
+      return code.includes(q) || nom.includes(q) || name.includes(q);
+    });
+    if (match) {
+      handleSelectAsset(match);
+    }
+  };
+
+  // Canal styling per condition
+  const getCanalStyle = (feature: any) => {
+    const cond = feature?.properties?.kondisi;
+    let color = '#16a34a'; // baik (green)
+    if (cond === 'rusak_ringan') color = '#eab308'; // yellow
+    else if (cond === 'rusak_sedang') color = '#f97316'; // orange
+    else if (cond === 'rusak_berat') color = '#ef4444'; // red
+
     return {
       color,
-      weight,
-      opacity: 0.9,
+      weight: 3.5,
+      opacity: 0.95,
+      lineCap: 'round' as const,
+      lineJoin: 'round' as const,
     };
-  }
+  };
 
-  // Styling for tertiary plots
-  const affectedPlotCodes = new Set(impactData?.petak.map(p => p.kode_petak) || []);
+  // Plot styling
+  const getPlotStyle = (feature: any) => {
+    const code = feature?.properties?.kode_petak;
+    const isImpacted = selectedImpact?.petak?.some((p) => p.kode_petak === code);
 
-  function getPlotStyle(feature: any) {
-    const isAffected = affectedPlotCodes.has(feature.properties.kode_petak);
-    if (isAffected) {
+    if (isImpacted) {
       return {
-        fillColor: '#ea580c',
-        weight: 2,
-        opacity: 1,
-        color: '#9a3412',
-        dashArray: '',
+        fillColor: '#ef4444',
         fillOpacity: 0.65,
+        color: '#b91c1c',
+        weight: 2.5,
       };
     }
+
     return {
-      fillColor: '#94a3b8',
-      weight: 1,
-      opacity: 0.8,
-      color: '#64748b',
-      dashArray: '3',
-      fillOpacity: 0.2,
+      fillColor: '#4ade80',
+      fillOpacity: 0.35,
+      color: '#15803d',
+      weight: 1.2,
     };
-  }
+  };
 
-  // Custom marker icon based on type and condition
-  function createAssetIcon(jenis: string, kondisi: string, isSelected: boolean) {
-    let bg = '#16a34a';
-    if (kondisi === 'rusak_ringan') bg = '#d97706';
-    else if (kondisi === 'rusak_sedang') bg = '#ea580c';
-    else if (kondisi === 'rusak_berat') bg = '#dc2626';
-
-    const size = isSelected ? 22 : 16;
-    const border = isSelected ? '3px solid #0f172a' : '2px solid white';
+  // Custom Building Marker HTML
+  const createAssetIcon = (cond: string) => {
+    let color = '#16a34a';
+    if (cond === 'rusak_ringan') color = '#eab308';
+    else if (cond === 'rusak_sedang') color = '#f97316';
+    else if (cond === 'rusak_berat') color = '#ef4444';
 
     return L.divIcon({
       className: 'custom-asset-marker',
-      html: `<div style="
-        background-color: ${bg};
-        width: ${size}px;
-        height: ${size}px;
-        border-radius: ${jenis === 'bendung' ? '2px' : '9999px'};
-        border: ${border};
-        box-shadow: 0 2px 5px rgba(0,0,0,0.4);
-      "></div>`,
-      iconSize: [size, size],
-      iconAnchor: [size / 2, size / 2],
+      html: `
+        <div style="
+          width: 13px;
+          height: 13px;
+          background-color: ${color};
+          border: 2px solid #ffffff;
+          border-radius: 50%;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+        "></div>
+      `,
+      iconSize: [13, 13],
+      iconAnchor: [6.5, 6.5],
     });
-  }
+  };
 
   return (
-    <div className="relative w-full h-[calc(100vh-4rem)] flex flex-col md:flex-row">
-      {/* Map Canvas */}
-      <div className="flex-1 h-full relative">
+    <div className="relative w-full h-full flex flex-col min-h-[calc(100vh-1rem)]">
+      {/* Top Header Bar matching Mockup */}
+      <div className="p-4 px-6 bg-white border-b border-slate-200/80 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 z-10 shadow-2xs">
+        <div>
+          <h1 className="text-xl font-bold text-slate-900 tracking-tight">
+            Peta Jaringan Irigasi
+          </h1>
+          <p className="text-xs text-slate-500 font-medium">
+            Visualisasi jaringan saluran, bangunan irigasi, dan petak tersier
+          </p>
+        </div>
+
+        {/* Search Bar matching top-right of mockup */}
+        <form onSubmit={handleSearchSubmit} className="relative w-full sm:w-80">
+          <input
+            type="text"
+            placeholder="Cari lokasi atau kode aset..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full pl-9 pr-4 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:bg-white transition-all shadow-2xs"
+          />
+          <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />
+        </form>
+      </div>
+
+      {/* Map Container */}
+      <div className="relative flex-1 w-full h-full">
         <MapContainer
           center={DEFAULT_CENTER}
           zoom={DEFAULT_ZOOM}
-          className="w-full h-full"
-          scrollWheelZoom={true}
+          className="w-full h-full z-0 min-h-[550px]"
+          zoomControl={true}
         >
-          <TileLayer
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-          />
+          <ScaleControl position="bottomleft" imperial={false} />
+          <MapPanController targetCoords={panTarget} fitBoundsBox={fitBoundsBox} trigger={flyTrigger} />
 
-          <MapPanController targetCoords={panTarget} />
+          {/* Base Tiles (Satellite or Street) */}
+          {tileMode === 'satellite' ? (
+            <TileLayer
+              attribution='&copy; <a href="https://www.esri.com/">Esri</a>'
+              url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+              maxZoom={19}
+            />
+          ) : (
+            <TileLayer
+              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              maxZoom={19}
+            />
+          )}
 
           {/* Tertiary Plots Layer */}
           {showPlots && plotsGeoJson && (
             <GeoJSON
-              key={`plots-${impactData?.kode_aset || 'none'}`}
+              key={`plots-${selectedImpact ? selectedImpact.kode_aset + '-' + selectedImpact.jumlah_petak : 'default'}`}
               data={plotsGeoJson}
               style={getPlotStyle}
-              onEachFeature={(feature, layer) => {
-                const props = feature.properties;
-                const isAff = affectedPlotCodes.has(props.kode_petak);
+              onEachFeature={(feat, layer) => {
+                const p = feat.properties;
                 layer.bindTooltip(`
-                  <div class="text-xs">
-                    <strong>Petak: ${props.kode_petak}</strong><br/>
-                    Nama: ${props.nama_petak || '-'}<br/>
-                    Luas: ${props.luas_ha} ha<br/>
-                    Sadap: ${props.nomenklatur_sadap || '-'}<br/>
-                    ${isAff ? '<span class="text-orange-600 font-bold">TERDAMPAK</span>' : ''}
+                  <div style="font-family: inherit; font-size: 11px;">
+                    <strong>Petak: ${p.kode_petak}</strong><br/>
+                    Luas: ${p.luas_ha} ha<br/>
+                    Sadap: ${p.nomenklatur_sadap || '-'}
                   </div>
                 `);
               }}
@@ -227,221 +344,199 @@ export default function MapCanvas({ initialAssetCode }: MapCanvasProps) {
           {/* Canals Layer */}
           {showCanals && canalsGeoJson && (
             <GeoJSON
-              key="canals-layer"
               data={canalsGeoJson}
               style={getCanalStyle}
-              onEachFeature={(feature, layer) => {
-                const props = feature.properties;
+              onEachFeature={(feat, layer) => {
+                const c = feat.properties;
                 layer.bindTooltip(`
-                  <div class="text-xs">
-                    <strong>${props.nama_saluran || props.id_ruas}</strong><br/>
-                    Tingkat: ${props.tingkat}<br/>
-                    Kondisi: ${props.kondisi}<br/>
-                    Panjang: ${props.panjang_km} km
+                  <div style="font-family: inherit; font-size: 11px;">
+                    <strong>Saluran: ${c.nama_saluran}</strong><br/>
+                    Tingkat: ${c.tingkat} | Kondisi: ${c.kondisi}<br/>
+                    Panjang: ${(c.length_m / 1000).toFixed(2)} km
                   </div>
                 `);
               }}
             />
           )}
 
-          {/* Asset Markers */}
-          {showAssets && assetsGeoJson?.features?.map((feat: any) => {
-            const coords = feat.geometry?.coordinates;
-            if (!coords || coords.length < 2) return null;
-            const [lon, lat] = coords;
-            const props = feat.properties;
-            const isSelected = selectedAsset?.kode_aset === props.kode_aset;
+          {/* Assets Markers */}
+          {showAssets &&
+            assetsGeoJson?.features?.map((feat: any, idx: number) => {
+              const coords = feat.geometry?.coordinates;
+              if (!coords || coords.length < 2) return null;
+              const [lon, lat] = coords;
+              const props = feat.properties;
 
-            return (
-              <Marker
-                key={props.kode_aset}
-                position={[lat, lon]}
-                icon={createAssetIcon(props.jenis, props.kondisi, isSelected)}
-                eventHandlers={{
-                  click: () => handleAssetClick(props, [lat, lon]),
-                }}
-              />
-            );
-          })}
+              return (
+                <Marker
+                  key={`asset-${props.kode_aset || idx}`}
+                  position={[lat, lon]}
+                  icon={createAssetIcon(props.kondisi)}
+                  eventHandlers={{
+                    click: () => handleSelectAsset(feat),
+                  }}
+                />
+              );
+            })}
         </MapContainer>
 
-        {/* Layer Controls & Legend Floating Panel */}
-        <div className="absolute top-4 right-4 z-[400] bg-white/95 backdrop-blur-sm p-4 rounded-xl shadow-md border border-slate-200 text-xs w-64 space-y-3">
-          <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-            <span className="font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
-              <Layers size={14} className="text-teal-600" />
-              Kontrol Lapisan
-            </span>
-          </div>
+        {/* Selected Asset Popup matching mockup */}
+        {selectedAsset && (
+          <div className="absolute left-6 top-6 z-20 w-72 bg-white rounded-xl shadow-lg border border-slate-200/90 p-4 transition-all">
+            <div className="flex items-start justify-between pb-2 border-b border-slate-100">
+              <div>
+                <h3 className="font-bold text-slate-900 text-[14px] leading-tight">
+                  {selectedAsset.kode_aset}
+                </h3>
+                <p className="text-[11px] text-slate-500 capitalize">
+                  {selectedAsset.jenis?.replace(/_/g, ' ') || 'Bangunan'}
+                </p>
+              </div>
+              <button
+                onClick={() => setSelectedAsset(null)}
+                className="text-slate-400 hover:text-slate-700 p-0.5 rounded-md"
+              >
+                <X size={16} />
+              </button>
+            </div>
 
-          <div className="space-y-1.5">
-            <label className="flex items-center gap-2 cursor-pointer text-slate-700">
-              <input 
-                type="checkbox" 
-                checked={showCanals} 
+            <div className="py-2.5 space-y-2 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500 font-medium">Kondisi</span>
+                <span className={`px-2 py-0.5 rounded text-[10.5px] font-bold capitalize ${
+                  selectedAsset.kondisi === 'rusak_berat' ? 'bg-red-50 text-red-700 border border-red-200' :
+                  selectedAsset.kondisi === 'rusak_sedang' ? 'bg-orange-50 text-orange-700 border border-orange-200' :
+                  selectedAsset.kondisi === 'rusak_ringan' ? 'bg-amber-50 text-amber-700 border border-amber-200' :
+                  'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                }`}>
+                  {selectedAsset.kondisi?.replace(/_/g, ' ')}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500 font-medium">Luas Terdampak :</span>
+                <span className="font-semibold text-slate-800 font-mono">
+                  {selectedImpact?.luas_terdampak_ha !== undefined
+                    ? `${selectedImpact.luas_terdampak_ha.toFixed(2).replace('.', ',')} ha`
+                    : '-'}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500 font-medium">Jumlah Petak :</span>
+                <span className="font-semibold text-slate-800 font-mono">
+                  {selectedImpact?.jumlah_petak !== undefined ? selectedImpact.jumlah_petak : '-'}
+                </span>
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+              <Link
+                href={`/aset/${selectedAsset.kode_aset}`}
+                className="text-[11.5px] font-bold text-emerald-600 hover:text-emerald-700 inline-flex items-center gap-1 group"
+              >
+                Lihat Detail <ArrowRight size={13} className="group-hover:translate-x-0.5 transition-transform" />
+              </Link>
+            </div>
+          </div>
+        )}
+
+        {/* Floating Layer Control & Legend on Top Right (Exact 100% Match to Mockup) */}
+        <div className="absolute right-4 top-4 z-20 w-48 bg-white/95 backdrop-blur-xs rounded-xl shadow-md border border-slate-200/90 p-3.5 text-xs select-none">
+          {/* Layer Peta */}
+          <h4 className="font-bold text-slate-900 text-[11.5px] mb-2 tracking-tight">
+            Layer Peta
+          </h4>
+          <div className="space-y-1.5 pb-3 border-b border-slate-100">
+            <label className="flex items-center gap-2 cursor-pointer text-slate-700 hover:text-slate-900 text-[11px]">
+              <input
+                type="checkbox"
+                checked={showCanals}
                 onChange={(e) => setShowCanals(e.target.checked)}
-                className="rounded text-teal-600 focus:ring-teal-500" 
+                className="rounded text-emerald-600 focus:ring-emerald-500 h-3.5 w-3.5"
               />
-              <span>Ruas Saluran</span>
+              <span>Saluran Irigasi</span>
             </label>
-            <label className="flex items-center gap-2 cursor-pointer text-slate-700">
-              <input 
-                type="checkbox" 
-                checked={showAssets} 
+
+            <label className="flex items-center gap-2 cursor-pointer text-slate-700 hover:text-slate-900 text-[11px]">
+              <input
+                type="checkbox"
+                checked={showAssets}
                 onChange={(e) => setShowAssets(e.target.checked)}
-                className="rounded text-teal-600 focus:ring-teal-500" 
+                className="rounded text-emerald-600 focus:ring-emerald-500 h-3.5 w-3.5"
               />
               <span>Bangunan Irigasi</span>
             </label>
-            <label className="flex items-center gap-2 cursor-pointer text-slate-700">
-              <input 
-                type="checkbox" 
-                checked={showPlots} 
+
+            <label className="flex items-center gap-2 cursor-pointer text-slate-700 hover:text-slate-900 text-[11px]">
+              <input
+                type="checkbox"
+                checked={showPlots}
                 onChange={(e) => setShowPlots(e.target.checked)}
-                className="rounded text-teal-600 focus:ring-teal-500" 
+                className="rounded text-emerald-600 focus:ring-emerald-500 h-3.5 w-3.5"
               />
               <span>Petak Tersier</span>
             </label>
           </div>
 
-          {/* Legend */}
-          <div className="border-t border-slate-100 pt-2 space-y-2">
-            <p className="font-semibold text-[11px] text-slate-500 uppercase tracking-wider">Kondisi</p>
-            <div className="grid grid-cols-2 gap-1.5 text-[11px]">
-              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-emerald-600"></span> Baik</span>
-              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-amber-600"></span> Rusak Ringan</span>
-              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-orange-600"></span> Rusak Sedang</span>
-              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-red-600"></span> Rusak Berat</span>
+          {/* Kondisi Bangunan Legend */}
+          <h4 className="font-bold text-slate-900 text-[11.5px] mt-2.5 mb-1.5 tracking-tight">
+            Kondisi Bangunan
+          </h4>
+          <div className="space-y-1 pb-2.5 border-b border-slate-100 text-[10.5px]">
+            <div className="flex items-center gap-2 text-slate-600">
+              <span className="w-2.5 h-2.5 rounded-full bg-[#16a34a] flex-shrink-0" />
+              <span>Baik</span>
             </div>
-            {impactData && (
-              <div className="pt-1 text-[11px] flex items-center gap-1.5 text-orange-700 font-semibold">
-                <span className="w-3 h-3 bg-orange-500/70 border border-orange-700 rounded-sm"></span>
-                Petak Terdampak ({impactData.jumlah_petak} petak)
-              </div>
-            )}
+            <div className="flex items-center gap-2 text-slate-600">
+              <span className="w-2.5 h-2.5 rounded-full bg-[#eab308] flex-shrink-0" />
+              <span>Rusak Ringan</span>
+            </div>
+            <div className="flex items-center gap-2 text-slate-600">
+              <span className="w-2.5 h-2.5 rounded-full bg-[#f97316] flex-shrink-0" />
+              <span>Rusak Sedang</span>
+            </div>
+            <div className="flex items-center gap-2 text-slate-600">
+              <span className="w-2.5 h-2.5 rounded-full bg-[#ef4444] flex-shrink-0" />
+              <span>Rusak Berat</span>
+            </div>
+          </div>
+
+          {/* Kondisi Saluran Legend */}
+          <h4 className="font-bold text-slate-900 text-[11.5px] mt-2.5 mb-1.5 tracking-tight">
+            Kondisi Saluran
+          </h4>
+          <div className="space-y-1 text-[10.5px]">
+            <div className="flex items-center gap-2 text-slate-600">
+              <span className="w-4 h-1 rounded-full bg-[#16a34a] flex-shrink-0" />
+              <span>Baik</span>
+            </div>
+            <div className="flex items-center gap-2 text-slate-600">
+              <span className="w-4 h-1 rounded-full bg-[#eab308] flex-shrink-0" />
+              <span>Rusak Ringan</span>
+            </div>
+            <div className="flex items-center gap-2 text-slate-600">
+              <span className="w-4 h-1 rounded-full bg-[#f97316] flex-shrink-0" />
+              <span>Rusak Sedang</span>
+            </div>
+            <div className="flex items-center gap-2 text-slate-600">
+              <span className="w-4 h-1 rounded-full bg-[#ef4444] flex-shrink-0" />
+              <span>Rusak Berat</span>
+            </div>
+          </div>
+
+          {/* Base Tile Toggle */}
+          <div className="mt-3 pt-2 border-t border-slate-100 flex items-center justify-between text-[10.5px] text-slate-500">
+            <span>Peta Satelit</span>
+            <button
+              onClick={() => setTileMode(tileMode === 'satellite' ? 'street' : 'satellite')}
+              className="text-emerald-700 font-semibold hover:underline"
+            >
+              {tileMode === 'satellite' ? 'Jalan' : 'Satelit'}
+            </button>
           </div>
         </div>
       </div>
-
-      {/* Asset Detail & Downstream Impact Slide-out Panel */}
-      {selectedAsset && (
-        <div className="w-full md:w-96 bg-white border-l border-slate-200 shadow-xl p-5 overflow-y-auto flex flex-col justify-between z-[500]">
-          <div>
-            <div className="flex items-start justify-between border-b border-slate-100 pb-3">
-              <div>
-                <span className="text-[10px] font-bold text-teal-700 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded uppercase">
-                  {selectedAsset.jenis.replace(/_/g, ' ')}
-                </span>
-                <h2 className="text-lg font-bold text-slate-900 mt-1 font-mono">
-                  {selectedAsset.kode_aset}
-                </h2>
-                {selectedAsset.nomenklatur && (
-                  <p className="text-xs font-semibold text-slate-600">
-                    Nomenklatur: {selectedAsset.nomenklatur}
-                  </p>
-                )}
-              </div>
-              <button 
-                onClick={clearSelection}
-                className="text-slate-400 hover:text-slate-600 p-1"
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            <div className="space-y-3 py-3 text-xs border-b border-slate-100">
-              <div className="flex justify-between">
-                <span className="text-slate-500">Saluran</span>
-                <span className="font-medium text-slate-800">{selectedAsset.nama_saluran || '-'}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Kondisi Terkini</span>
-                <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                  selectedAsset.kondisi === 'rusak_berat' ? 'bg-red-100 text-red-800' :
-                  selectedAsset.kondisi === 'rusak_sedang' ? 'bg-orange-100 text-orange-800' :
-                  selectedAsset.kondisi === 'rusak_ringan' ? 'bg-amber-100 text-amber-800' :
-                  'bg-emerald-100 text-emerald-800'
-                }`}>
-                  {selectedAsset.kondisi.replace(/_/g, ' ')}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Tanggal Kondisi</span>
-                <span className="font-medium text-slate-800">{selectedAsset.tgl_kondisi || '-'}</span>
-              </div>
-              {selectedAsset.tanda && selectedAsset.tanda.length > 0 && (
-                <div>
-                  <span className="text-slate-500 block mb-1">Tanda Kualitas:</span>
-                  <div className="flex flex-wrap gap-1">
-                    {selectedAsset.tanda.map((t: string) => (
-                      <span key={t} className="bg-amber-50 text-amber-800 border border-amber-200 px-1.5 py-0.5 rounded text-[10px]">
-                        {t}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Downstream Impact Section */}
-            <div className="py-4">
-              <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-1.5 mb-2">
-                <AlertTriangle size={14} className="text-orange-600" />
-                Dampak Kerusakan Hilir
-              </h3>
-
-              {loadingImpact ? (
-                <div className="py-6 text-center text-xs text-slate-400">
-                  Menghitung aliran hilir dan petak terdampak...
-                </div>
-              ) : impactData ? (
-                <div className="space-y-3">
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="bg-orange-50 border border-orange-200 p-2.5 rounded-lg text-center">
-                      <span className="text-[10px] text-orange-700 uppercase font-medium">Petak Terdampak</span>
-                      <p className="text-xl font-bold text-orange-950 mt-0.5">{impactData.jumlah_petak}</p>
-                    </div>
-                    <div className="bg-orange-50 border border-orange-200 p-2.5 rounded-lg text-center">
-                      <span className="text-[10px] text-orange-700 uppercase font-medium">Luas Terdampak</span>
-                      <p className="text-xl font-bold text-orange-950 mt-0.5">{impactData.luas_terdampak_ha.toFixed(2)} ha</p>
-                    </div>
-                  </div>
-
-                  {impactData.petak.length > 0 && (
-                    <div className="mt-2">
-                      <p className="text-[11px] font-semibold text-slate-600 mb-1">Daftar Petak Terdampak:</p>
-                      <div className="max-h-40 overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-100 text-[11px]">
-                        {impactData.petak.map((p) => (
-                          <div key={p.kode_petak} className="px-2.5 py-1.5 flex justify-between">
-                            <span className="font-mono font-medium text-slate-700">{p.kode_petak}</span>
-                            <span className="text-slate-500">{p.luas_ha} ha</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {impactData.jumlah_petak === 0 && (
-                    <p className="text-[11px] text-slate-500 italic bg-slate-50 p-2 rounded">
-                      Bangunan ini tidak memiliki petak tersier di hilirnya, atau bertanda jauh dari saluran.
-                    </p>
-                  )}
-                </div>
-              ) : null}
-            </div>
-          </div>
-
-          <div className="pt-3 border-t border-slate-100">
-            <Link
-              href={`/aset/${selectedAsset.kode_aset}`}
-              className="w-full flex items-center justify-center gap-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold py-2.5 rounded-lg transition"
-            >
-              <span>Buka Detail Lengkap</span>
-              <ArrowRight size={14} />
-            </Link>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

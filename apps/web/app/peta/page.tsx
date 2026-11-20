@@ -17,7 +17,7 @@ const DynamicMap = dynamic(() => import('@/components/MapCanvas'), {
 
 function MapPageContent() {
   const searchParams = useSearchParams();
-  const assetParam = searchParams.get('aset');
+  const assetParam = searchParams.get('aset') || searchParams.get('search');
 
   return (
     <div className="w-full h-full flex flex-col">

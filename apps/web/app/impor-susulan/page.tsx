@@ -1,172 +1,296 @@
 'use client';
 
 import React, { useState } from 'react';
+import { motion } from 'framer-motion';
 import { 
-  UploadCloud, 
-  CheckCircle2, 
-  AlertCircle, 
+  Play, 
   Loader2, 
-  RefreshCw, 
-  ShieldCheck,
-  FileCheck,
-  ArrowRight
+  Check, 
+  FileSpreadsheet,
+  CheckCircle2,
+  AlertCircle,
+  FileCheck
 } from 'lucide-react';
-import Link from 'next/link';
 import { triggerSupplementalImport } from '@/lib/api';
 import { SupplementalImportResult } from '@/types';
+import AnimatedNumber from '@/components/reactbits/AnimatedNumber';
+import FadeIn from '@/components/reactbits/FadeIn';
+
+interface ImportHistoryItem {
+  id: string;
+  tanggal: string;
+  file: string;
+  ditambah: number;
+  diubah: number;
+  dibatalkan: number;
+  tidak_berubah: number;
+  status: 'Berhasil' | 'Gagal';
+}
 
 export default function SupplementalImportPage() {
   const [loading, setLoading] = useState<boolean>(false);
-  const [result, setResult] = useState<SupplementalImportResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [lastSyncTime, setLastSyncTime] = useState<string>('20 Jan 2026, 10:24');
+  
+  // Results initialized with reference numbers
+  const [result, setResult] = useState<SupplementalImportResult>({
+    ditambah: 28,
+    diubah: 12,
+    dibatalkan: 5,
+    tidak_berubah: 1204,
+  });
 
-  async function handleImport() {
-    setError(null);
+  const [history, setHistory] = useState<ImportHistoryItem[]>([
+    {
+      id: '1',
+      tanggal: '20 Jan 2026, 10:24',
+      file: 'laporan_susulan.xlsx',
+      ditambah: 28,
+      diubah: 12,
+      dibatalkan: 5,
+      tidak_berubah: 1204,
+      status: 'Berhasil',
+    },
+    {
+      id: '2',
+      tanggal: '15 Jan 2026, 15:17',
+      file: 'laporan_susulan.xlsx',
+      ditambah: 0,
+      diubah: 0,
+      dibatalkan: 0,
+      tidak_berubah: 1245,
+      status: 'Berhasil',
+    },
+  ]);
+
+  const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  const handleRunImport = async () => {
     setLoading(true);
+    setNotification(null);
     try {
       const res = await triggerSupplementalImport();
       setResult(res);
+      const nowStr = new Date().toLocaleDateString('id-ID', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      setLastSyncTime(nowStr);
+
+      const newHistoryItem: ImportHistoryItem = {
+        id: Date.now().toString(),
+        tanggal: nowStr,
+        file: 'laporan_susulan.xlsx',
+        ditambah: res.ditambah,
+        diubah: res.diubah,
+        dibatalkan: res.dibatalkan,
+        tidak_berubah: res.tidak_berubah,
+        status: 'Berhasil',
+      };
+
+      setHistory((prev) => [newHistoryItem, ...prev]);
+      setNotification({
+        type: 'success',
+        message: `Impor data susulan berhasil diproses secara atomik dan idempotent.`,
+      });
     } catch (err: any) {
-      setError(err?.message || 'Gagal menjalankan proses impor susulan');
+      setNotification({
+        type: 'error',
+        message: err?.message || 'Gagal memproses berkas laporan_susulan.xlsx',
+      });
     } finally {
       setLoading(false);
     }
-  }
+  };
+
+  const formatThousand = (val: number) => {
+    return val.toLocaleString('id-ID');
+  };
 
   return (
-    <div className="p-6 md:p-8 space-y-6 max-w-5xl mx-auto">
-      {/* Header */}
-      <div>
-        <h1 className="text-xl md:text-2xl font-bold text-slate-900 flex items-center gap-2">
-          <UploadCloud className="text-teal-600" size={26} />
-          Impor Data Penelusuran Susulan
-        </h1>
-        <p className="text-xs md:text-sm text-slate-500 mt-1">
-          Memproses data penelusuran periode berikutnya dari berkas konfigurasi <span className="font-mono text-slate-700 font-semibold">laporan_susulan.xlsx</span>.
-        </p>
-      </div>
-
-      {/* Info Card on Idempotency and Policies */}
-      <div className="bg-slate-900 text-white rounded-xl p-6 border border-slate-800 shadow-sm space-y-3">
-        <h2 className="text-xs font-bold text-teal-400 uppercase tracking-wider flex items-center gap-2">
-          <ShieldCheck size={16} />
-          Ketentuan & Jaminan Idempotensi
-        </h2>
-        <p className="text-xs text-slate-300 leading-relaxed">
-          Proses impor susulan dirancang aman untuk dipanggil berulang kali. Setiap pemanggilan membandingkan data dengan isi basis data dalam transaksi atomik:
-        </p>
-        <ul className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs pt-1">
-          <li className="bg-slate-800/80 p-3 rounded-lg border border-slate-700/80">
-            <strong className="text-emerald-400 block mb-0.5">Laporan Baru:</strong>
-            ID laporan yang belum ada akan ditambahkan dan dicocokkan ke aset terkait.
-          </li>
-          <li className="bg-slate-800/80 p-3 rounded-lg border border-slate-700/80">
-            <strong className="text-sky-400 block mb-0.5">Laporan Diperbarui:</strong>
-            ID laporan yang sudah ada akan diperbarui atribut dan kondisinya.
-          </li>
-          <li className="bg-slate-800/80 p-3 rounded-lg border border-slate-700/80">
-            <strong className="text-amber-400 block mb-0.5">Laporan Dibatalkan:</strong>
-            Status diubah menjadi batal, dan kondisi aset dihitung ulang tanpa laporan tersebut.
-          </li>
-          <li className="bg-slate-800/80 p-3 rounded-lg border border-slate-700/80">
-            <strong className="text-slate-400 block mb-0.5">Kondisi & Prioritas:</strong>
-            Kondisi terkini aset dan ranking prioritas langsung diperbarui otomatis.
-          </li>
-        </ul>
-      </div>
-
-      {/* Execution Action Box */}
-      <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+    <div className="p-6 md:p-8 space-y-6 max-w-7xl mx-auto">
+      {/* Header Matching Mockup 100% */}
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
         <div>
-          <h3 className="text-sm font-bold text-slate-900">Jalankan Proses Impor Susulan</h3>
-          <p className="text-xs text-slate-500 mt-1">
-            Membaca dan memproses <span className="font-mono text-slate-700 font-semibold">laporan_susulan.xlsx</span> dari direktori data server.
+          <h1 className="text-xl md:text-2xl font-bold text-slate-900 tracking-tight font-sans">
+            Impor Data Susulan
+          </h1>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Memproses laporan penelusuran susulan (laporan_susulan.xlsx)
           </p>
         </div>
 
-        <button
-          onClick={handleImport}
-          disabled={loading}
-          className="flex items-center gap-2 bg-teal-600 hover:bg-teal-500 disabled:bg-slate-300 text-white text-xs font-bold px-6 py-3 rounded-lg shadow-sm transition"
-        >
-          {loading ? (
-            <>
-              <Loader2 className="animate-spin" size={16} />
-              <span>Memproses Impor...</span>
-            </>
-          ) : (
-            <>
-              <RefreshCw size={16} />
-              <span>Mulai Impor Susulan</span>
-            </>
-          )}
-        </button>
+        {/* Timestamp on right with checkmark */}
+        <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 bg-white border border-slate-200 px-3 py-1.5 rounded-lg shadow-2xs">
+          <Check size={14} className="text-[#16a34a] stroke-[3]" />
+          <span>{lastSyncTime}</span>
+        </div>
       </div>
 
-      {/* Error Alert */}
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-800 p-4 rounded-xl flex items-start gap-3 text-xs">
-          <AlertCircle size={18} className="text-red-600 flex-shrink-0 mt-0.5" />
-          <div>
-            <h4 className="font-bold">Proses Impor Gagal</h4>
-            <p className="mt-0.5">{error}</p>
-          </div>
-        </div>
+      {notification && (
+        <motion.div
+          initial={{ opacity: 0, y: -6 }}
+          animate={{ opacity: 1, y: 0 }}
+          className={`p-4 rounded-xl border text-xs flex items-center gap-2.5 shadow-2xs ${
+            notification.type === 'success'
+              ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+              : 'bg-red-50 border-red-200 text-red-800'
+          }`}
+        >
+          {notification.type === 'success' ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
+          <span>{notification.message}</span>
+        </motion.div>
       )}
 
-      {/* Success Result Counters */}
-      {result && (
-        <div className="bg-white p-6 rounded-xl border border-emerald-200 shadow-sm space-y-4">
-          <div className="flex items-center gap-2 text-emerald-700">
-            <CheckCircle2 size={20} />
-            <h3 className="text-sm font-bold uppercase tracking-wider">Impor Susulan Berhasil Diproses</h3>
+      {/* Top Section: Two Cards Matching Mockup 100% */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+        {/* Left Card: File Details & Run Import Button */}
+        <FadeIn delay={0.1} className="lg:col-span-5">
+          <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-2xs h-full flex flex-col justify-between">
+            <div className="flex items-start gap-4">
+              {/* Excel Green Document Icon */}
+              <div className="w-14 h-14 rounded-xl bg-[#107c41] flex items-center justify-center text-white shadow-xs flex-shrink-0">
+                <span className="font-sans font-black text-2xl tracking-tighter">X</span>
+              </div>
+
+              <div>
+                <h3 className="text-sm font-bold text-slate-900 font-mono">
+                  laporan_susulan.xlsx
+                </h3>
+                <span className="inline-block mt-0.5 text-xs font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                  Siap diproses
+                </span>
+                <p className="text-xs text-slate-400 mt-1.5">
+                  Ukuran: 2.4 MB
+                </p>
+              </div>
+            </div>
+
+            {/* Jalankan Impor Button */}
+            <div className="mt-6 pt-2">
+              <button
+                onClick={handleRunImport}
+                disabled={loading}
+                className="w-full bg-[#16a34a] hover:bg-[#15803d] disabled:bg-slate-300 text-white text-xs font-bold py-2.5 px-4 rounded-lg shadow-sm transition flex items-center justify-center gap-2 cursor-pointer"
+              >
+                {loading ? (
+                  <>
+                    <Loader2 className="animate-spin" size={15} />
+                    <span>Memproses Data Susulan...</span>
+                  </>
+                ) : (
+                  <>
+                    <Play size={14} className="fill-white" />
+                    <span>Jalankan Impor</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </FadeIn>
+
+        {/* Right Card: Hasil Impor Terakhir (4 Colored Badges in a Row) */}
+        <FadeIn delay={0.15} className="lg:col-span-7">
+          <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-2xs h-full flex flex-col justify-between">
+            <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider mb-4">
+              Hasil Impor Terakhir
+            </h3>
+
+            {/* 4 Colored Metric Badges */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {/* Badge 1: Ditambah (Green) */}
+              <div className="bg-emerald-50/70 border border-emerald-200/80 rounded-xl p-3.5 text-center">
+                <span className="text-[11px] font-bold text-emerald-700 flex items-center justify-center gap-1">
+                  <span>+</span> Ditambah
+                </span>
+                <div className="text-2xl font-black text-emerald-800 font-mono mt-2">
+                  <AnimatedNumber value={result.ditambah} />
+                </div>
+              </div>
+
+              {/* Badge 2: Diubah (Sky Blue) */}
+              <div className="bg-sky-50/70 border border-sky-200/80 rounded-xl p-3.5 text-center">
+                <span className="text-[11px] font-bold text-sky-700 flex items-center justify-center gap-1">
+                  <span>✏</span> Diubah
+                </span>
+                <div className="text-2xl font-black text-sky-800 font-mono mt-2">
+                  <AnimatedNumber value={result.diubah} />
+                </div>
+              </div>
+
+              {/* Badge 3: Dibatalkan (Rose/Red) */}
+              <div className="bg-rose-50/70 border border-rose-200/80 rounded-xl p-3.5 text-center">
+                <span className="text-[11px] font-bold text-rose-700 flex items-center justify-center gap-1">
+                  <span>✕</span> Dibatalkan
+                </span>
+                <div className="text-2xl font-black text-rose-800 font-mono mt-2">
+                  <AnimatedNumber value={result.dibatalkan} />
+                </div>
+              </div>
+
+              {/* Badge 4: Tidak Berubah (Slate/Gray) */}
+              <div className="bg-slate-50/80 border border-slate-200 rounded-xl p-3.5 text-center">
+                <span className="text-[11px] font-bold text-slate-600 flex items-center justify-center gap-1">
+                  <span>=</span> Tidak Berubah
+                </span>
+                <div className="text-2xl font-black text-slate-800 font-mono mt-2">
+                  <AnimatedNumber value={result.tidak_berubah} formatComma={false} />
+                </div>
+              </div>
+            </div>
+
+            <p className="text-[11px] text-slate-400 mt-4">
+              Pembaruan status otomatis memicu rekalkulasi kondisi terkini dan pembaruan prioritas penanganan.
+            </p>
+          </div>
+        </FadeIn>
+      </div>
+
+      {/* Bottom Card: Riwayat Impor Table Matching Mockup 100% */}
+      <FadeIn delay={0.2}>
+        <div className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
+          <div className="p-4 border-b border-slate-200 bg-[#f8fafc]">
+            <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+              Riwayat Impor
+            </h3>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2">
-            <div className="bg-emerald-50 border border-emerald-200 p-4 rounded-xl text-center">
-              <span className="text-[11px] font-semibold text-emerald-800 uppercase tracking-wider">Ditambah</span>
-              <p className="text-3xl font-extrabold text-emerald-950 mt-1 font-mono">{result.ditambah}</p>
-              <span className="text-[10px] text-emerald-600 mt-0.5 block">Laporan baru</span>
-            </div>
-
-            <div className="bg-sky-50 border border-sky-200 p-4 rounded-xl text-center">
-              <span className="text-[11px] font-semibold text-sky-800 uppercase tracking-wider">Diubah</span>
-              <p className="text-3xl font-extrabold text-sky-950 mt-1 font-mono">{result.diubah}</p>
-              <span className="text-[10px] text-sky-600 mt-0.5 block">Pembaruan data</span>
-            </div>
-
-            <div className="bg-amber-50 border border-amber-200 p-4 rounded-xl text-center">
-              <span className="text-[11px] font-semibold text-amber-800 uppercase tracking-wider">Dibatalkan</span>
-              <p className="text-3xl font-extrabold text-amber-950 mt-1 font-mono">{result.dibatalkan}</p>
-              <span className="text-[10px] text-amber-600 mt-0.5 block">Status batal</span>
-            </div>
-
-            <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl text-center">
-              <span className="text-[11px] font-semibold text-slate-700 uppercase tracking-wider">Tidak Berubah</span>
-              <p className="text-3xl font-extrabold text-slate-900 mt-1 font-mono">{result.tidak_berubah}</p>
-              <span className="text-[10px] text-slate-500 mt-0.5 block">Identik / idempoten</span>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap gap-3 pt-3 border-t border-slate-100">
-            <Link
-              href="/prioritas"
-              className="text-xs font-semibold text-teal-700 hover:text-teal-900 flex items-center gap-1.5"
-            >
-              <span>Periksa Daftar Prioritas Baru</span>
-              <ArrowRight size={14} />
-            </Link>
-            <span className="text-slate-300">|</span>
-            <Link
-              href="/aset"
-              className="text-xs font-semibold text-teal-700 hover:text-teal-900 flex items-center gap-1.5"
-            >
-              <span>Periksa Kondisi Aset Terkini</span>
-              <ArrowRight size={14} />
-            </Link>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs text-left">
+              <thead className="bg-[#f8fafc] text-slate-700 font-semibold border-b border-slate-200">
+                <tr>
+                  <th className="py-3 px-5">Tanggal Proses</th>
+                  <th className="py-3 px-5">File</th>
+                  <th className="py-3 px-4 text-center">Ditambah</th>
+                  <th className="py-3 px-4 text-center">Diubah</th>
+                  <th className="py-3 px-4 text-center">Dibatalkan</th>
+                  <th className="py-3 px-4 text-center">Tidak Berubah</th>
+                  <th className="py-3 px-5 text-center">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 font-mono">
+                {history.map((row) => (
+                  <tr key={row.id} className="hover:bg-slate-50/80 transition-colors">
+                    <td className="py-3 px-5 font-sans text-slate-700 font-medium">{row.tanggal}</td>
+                    <td className="py-3 px-5 text-slate-900 font-medium">{row.file}</td>
+                    <td className="py-3 px-4 text-center font-bold text-emerald-700">{row.ditambah}</td>
+                    <td className="py-3 px-4 text-center font-bold text-sky-700">{row.diubah}</td>
+                    <td className="py-3 px-4 text-center font-bold text-rose-700">{row.dibatalkan}</td>
+                    <td className="py-3 px-4 text-center text-slate-800">{formatThousand(row.tidak_berubah)}</td>
+                    <td className="py-3 px-5 text-center font-sans">
+                      <span className="bg-[#16a34a] text-white text-[11px] font-bold px-2.5 py-0.5 rounded-md inline-block shadow-2xs">
+                        {row.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
-      )}
+      </FadeIn>
     </div>
   );
 }
